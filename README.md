@@ -1,534 +1,520 @@
-# Subscription Management System (Brightloop Software)
+# Subscription Management System
 
-A backend platform that runs the full life of a subscription business: products and variants,
-plans, taxes, discounts, quotation templates, subscriptions with a controlled lifecycle,
-automatic billing with exactly-once invoicing, payments, overdue tracking, and finance reporting.
+A full-stack subscription and billing management application designed to simplify subscription lifecycles, recurring billing, invoice generation, payment tracking, and financial reporting.
 
-Stack: **Python 3.12 · FastAPI · SQLAlchemy 2.0 · PostgreSQL 16 · Pydantic v2 · JWT · bcrypt · Pytest · React 18 · Vite**
+The project uses **FastAPI, React, and PostgreSQL** to provide a structured solution for managing subscription-based business operations.
 
-Repository: https://github.com/arthi6/subscription-management-system
+## Table of Contents
 
-## Contents
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Technology Stack](#technology-stack)
+- [System Architecture](#system-architecture)
+- [Project Structure](#project-structure)
+- [Prerequisites](#prerequisites)
+- [Installation and Setup](#installation-and-setup)
+- [Running the Application](#running-the-application)
+- [API Documentation](#api-documentation)
+- [Testing](#testing)
+- [Security](#security)
+- [Limitations](#limitations)
+- [Future Enhancements](#future-enhancements)
+- [Author](#author)
 
-1. [Abstract](#1-abstract) · 2. [Requirement coverage](#2-requirement-coverage) · 3. [Architecture](#3-architecture) ·
-4. [Billing rules](#4-billing-rules-precisely) · 5. [Security](#5-security) · 6. [Run it locally](#6-deployment-on-your-local-machine) ·
-6a. [Web console](#6a-web-console-frontend) · 7. [API overview](#7-api-overview) · 8. [Known limits](#8-known-limits-and-next-steps) ·
-9. [Submission checklist](#9-submission-checklist)
+## Overview
 
-## Quick start
+Managing subscription-based services requires accurate handling of customers, subscription plans, billing cycles, invoices, payments, renewals, and outstanding balances.
 
-```bash
-cp .env.example .env
-docker compose up -d db mailpit          # PostgreSQL + mail catcher
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000   # API  -> http://localhost:8000/docs
-# second terminal
-cd frontend && npm install && npm run dev   # UI   -> http://localhost:3000
-```
+The Subscription Management System centralizes these operations in a single application.
 
-Log in at http://localhost:3000 with the **Admin** tab: `admin@brightloop.com` / `Admin@12345`.
-Backend tests: `pytest -q` (expect `43 passed`).
+The backend provides APIs for managing subscriptions, processing recurring billing, generating invoices, recording payments, and retrieving financial reports. The frontend provides an interface for administrators, staff, and customers to access the functionality available to their roles.
 
+The application focuses on maintaining consistent business rules, protecting customer data, and preventing common billing errors.
 
----
+## Key Features
 
-## 1. Abstract
+### 1. Subscription Lifecycle Management
 
-Brightloop Software sells on subscription, so its revenue arrives every month rather than once.
-Today its subscriptions live in a spreadsheet, invoices are typed by hand, payments are matched by
-scrolling through bank statements, and renewals are remembered by whoever notices first. This
-project replaces that process with one system of record.
+- Create and manage products, product variants, and subscription plans.
+- Manage subscriptions and quotation-based subscription workflows.
+- Track subscription statuses and lifecycle transitions.
+- Configure subscription expiry and renewal behaviour.
+- Maintain subscription status history.
+- Support administrative subscription management.
 
-The backend is a modular FastAPI service over PostgreSQL. The data model enforces integrity in the
-database itself: one invoice per subscription per billing period is a unique constraint, lifecycle
-states are checked by a transition table, and payments are validated against outstanding balances
-inside row-locked transactions. The billing engine runs as a batch that catches up missed periods,
-is idempotent, isolates failures per subscription, and records every failure in a run log. Discount
-usage limits are enforced with an atomic conditional update, so concurrent runs cannot exceed them.
+### 2. Recurring Billing
 
-Access is role-based (admin, staff, customer). Passwords are stored as bcrypt hashes and password
-reset tokens as SHA-256 hashes, single-use and time-limited. Customers see only their own data through
-the portal endpoints, and a request for another customer's record returns 404 rather than revealing
-that it exists. Reports are computed with SQL aggregates and indexed filters, so dashboards stay
-within the two-second target on large books of business.
+- Generate invoices for eligible subscriptions.
+- Handle missed billing periods during recurring billing runs.
+- Prevent duplicate invoices for the same subscription and billing period.
+- Record billing-run results and errors.
+- Track billing operations for monitoring and troubleshooting.
 
----
+### 3. Invoice Management
 
-## 2. Requirement coverage
+- Generate invoices for subscription billing.
+- Calculate applicable taxes and discounts.
+- Confirm and cancel invoices.
+- Send invoices through the configured email service.
+- Generate print-ready invoice views.
+- Track outstanding and overdue invoice balances.
+- Support payment reminders.
 
-| Scene in the brief | Where it is implemented |
+### 4. Payment Management
+
+- Record payments against invoices.
+- Track paid amounts and remaining balances.
+- Validate payments against the outstanding invoice amount.
+- Store payment details, including payment method, date, amount, and notes.
+- Maintain payment records for financial tracking.
+
+### 5. Discounts and Taxes
+
+- Manage applicable tax configurations.
+- Apply supported fixed-value and percentage-based discounts.
+- Calculate invoice totals based on the applicable tax and discount rules.
+- Maintain consistent billing calculations.
+
+### 6. Dashboard and Financial Reporting
+
+- View subscription and financial metrics.
+- Monitor collected revenue and outstanding balances.
+- Track overdue invoices.
+- Retrieve financial summaries.
+- Filter and paginate supported records.
+
+### 7. Authentication and Role-Based Access Control
+
+- JWT-based authentication.
+- Role-based authorization for administrators, staff, and customers.
+- Password hashing using bcrypt.
+- Time-limited password-reset workflow.
+- Customer-specific access to subscriptions and invoices.
+- Protected API endpoints based on user permissions.
+
+### 8. Web Interface
+
+- React-based frontend powered by Vite.
+- Dashboard for subscription and financial information.
+- Interfaces for managing customers, products, plans, subscriptions, and invoices.
+- Customer portal for accessing personal subscription and invoice information.
+- API integration between the frontend and backend.
+
+## Technology Stack
+
+| Component | Technology |
 |---|---|
-| Sign up with unique email; strong passwords | `schemas.check_password`, `auth.signup`, unique index on `users.email` |
-| Password reset link by email | `auth.forgot_password`, `auth.reset_password` (single use, 30-minute expiry) |
-| Admin / staff / customer access | `deps.require_roles`; only admin can call `POST /admin/staff` |
-| Products, sales and cost price | `catalog.create_product` |
-| Variants that add to price (e.g. Odoo brand +560) | `catalog.add_variant`, applied in `subscriptions.create_subscription` |
-| Plans with billing period, min quantity, availability dates | `catalog.create_plan`, enforced on subscription creation |
-| Plan end behaviour: auto-close, manual close, pause, renew | `EndBehavior` handling in `billing.bill_subscription` |
-| Quotation templates with validity in days | `catalog.create_template`, `subscriptions.create_from_template` |
-| Subscription number, lines, expiry, payment terms | `Subscription`, `SubscriptionLine`, `create_subscription` |
-| Draft → Quotation → Confirmed → Active → Closed, logged | `subscriptions.ALLOWED_TRANSITIONS`, `SubscriptionStatusLog` |
-| Taxes calculated automatically | `Tax` linked to products; computed per line in `billing.build_invoice` |
-| Automatic invoices on billing day, nothing billed twice or skipped | `billing.run_billing`, unique `(subscription_id, period_start)` |
-| Invoice Draft → Confirmed → Paid; confirm, cancel, send, print | `invoices` router, `billing.confirm_invoice` / `cancel_invoice`; print via `invoice_document.render_invoice_html` |
-| Discounts: fixed or percent, min purchase/quantity, dates, usage limit | `Discount` model, `billing._find_discount`, `_consume_usage` |
-| Discount applies to next invoice automatically and stops when used up | Applied in every `build_invoice`; atomic usage counter |
-| Payments by method, amount, date, note, against an invoice | `payments` service, `POST /invoices/{id}/payments` |
-| Paid vs outstanding; overdue chasing | `invoices?overdue=true`, `POST /invoices/reminders` |
-| Finance summary: active subs, revenue, outstanding, overdue, filters | `GET /reports/summary` with date, plan and customer filters |
-| Pages respond under two seconds with thousands of subscriptions | Indexes, server-side pagination, SQL aggregates, `scripts/seed.py` |
+| Programming Language | Python 3.12 |
+| Backend Framework | FastAPI |
+| ORM | SQLAlchemy 2.0 |
+| Data Validation | Pydantic v2 |
+| Database | PostgreSQL 16 |
+| Authentication | JWT |
+| Password Hashing | bcrypt |
+| Frontend Framework | React 18 |
+| Frontend Build Tool | Vite |
+| Testing Framework | Pytest |
+| Containerization | Docker |
+| Email Testing | Mailpit |
+| API Documentation | Swagger UI, ReDoc |
 
----
+## System Architecture
 
-## 3. Architecture
+The Subscription Management System follows a modular, layered architecture that separates the presentation layer, API layer, business logic, and data storage. This separation improves maintainability, security, and scalability.
 
+```text
+┌──────────────────────────────────────────────────────────────┐
+│                      PRESENTATION LAYER                      │
+│                                                              │
+│                 React 18 + Vite Frontend                     │
+│                                                              │
+│   Admin Dashboard  │  Staff Interface  │  Customer Portal    │
+└─────────────────────────────┬────────────────────────────────┘
+                              │
+                              │ HTTP / REST API
+                              ▼
+┌──────────────────────────────────────────────────────────────┐
+│                       API LAYER                              │
+│                                                              │
+│                       FastAPI                                │
+│                                                              │
+│   Authentication  │  Request Validation  │  Authorization   │
+│                                                              │
+│   Routers: Auth, Products, Plans, Subscriptions, Invoices,   │
+│            Payments, Billing, Reports, Customer Portal       │
+└─────────────────────────────┬────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────┐
+│                     BUSINESS LOGIC LAYER                     │
+│                                                              │
+│   Subscription Lifecycle Management                          │
+│   Recurring Billing and Invoice Generation                   │
+│   Tax and Discount Calculations                              │
+│   Payment Validation and Balance Tracking                    │
+│   Financial Reporting and Billing-Run Management             │
+└─────────────────────────────┬────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────┐
+│                      DATA ACCESS LAYER                       │
+│                                                              │
+│                  SQLAlchemy 2.0 ORM                          │
+│                                                              │
+│      Database Models  │  Relationships  │  Constraints       │
+└─────────────────────────────┬────────────────────────────────┘
+                              │
+                              │ SQL Queries
+                              ▼
+┌──────────────────────────────────────────────────────────────┐
+│                       DATA LAYER                             │
+│                                                              │
+│                       PostgreSQL                             │
+│                                                              │
+│   Customers │ Products │ Plans │ Subscriptions │ Invoices    │
+│                  Payments │ Billing Records                  │
+└──────────────────────────────────────────────────────────────┘
+
+
+                    SUPPORTING SERVICES
+
+       ┌────────────────────┐  ┌────────────────────────┐
+       │ JWT Authentication │  │ Mailpit Email Testing  │
+       │ Password Security  │  │ SMTP / Email Preview   │
+       └────────────────────┘  └────────────────────────┘
 ```
-app/
-  main.py            FastAPI app, lifespan (create tables, bootstrap admin, optional scheduler),
-                     exception handlers (domain errors → 422, integrity errors → 409)
-  config.py          Settings from environment variables / .env
-  database.py        Engine, session factory, get_db, utcnow; SQLite FK pragma for tests
-  models.py          SQLAlchemy 2.0 models, enums, constraints, indexes
-  schemas.py         Pydantic request models and password policy
-  security.py        bcrypt, JWT, reset token generation
-  deps.py            get_current_user, require_roles, get_or_404
-  mailer.py          SMTP sender (Mailpit locally); logs instead of failing if SMTP is down
-  serializers.py     Response shaping
-  services/          Business rules, free of HTTP concerns
-    subscriptions.py   State machine, subscription creation
-    billing.py         Invoice building, discounts, taxes, billing runs, invoice actions
-    payments.py        Payment recording and derived invoice status
-    invoice_document.py  Print-ready HTML invoice renderer (escapes every value)
-    reports.py         Finance aggregates and aging buckets
-    common.py          Decimal helpers, period arithmetic, pagination
-  routers/           Thin HTTP layer: auth, catalog, subscriptions, invoices, reports, portal
-frontend/            React + Vite web console (src/App.jsx, src/api.js, src/styles.css)
-tests/               Pytest suite (43 tests) run against SQLite
-scripts/seed.py      Demo data generator for performance checks
-```
 
-Routers only parse input and call services. All rules live in `services/`, which is what makes the
-billing logic testable and easy to explain in a review.
+### Architecture Components
 
-### Data model (key relationships)
-
-```
-users ──< subscriptions >── plans >── products ──< product_variants
-              │   │                      │
-              │   └──< subscription_lines >── taxes
-              │   └──< subscription_status_logs
-              │   └── discounts (optional, per subscription)
-              │
-              └──< invoices ──< invoice_lines
-                     │   UNIQUE (subscription_id, period_start)
-                     └──< payments
-
-billing_runs            run log with per-subscription errors
-password_reset_tokens   SHA-256 hashes only, single use
-```
-
-Money is `NUMERIC(12,2)` and is rounded half-up with `Decimal` in Python. Floats are never used for
-amounts.
-
----
-
-## 4. Billing rules, precisely
-
-1. **Which subscriptions are billed:** only `active` subscriptions whose `next_billing_date` is on or
-   before the run date. Draft, quotation, confirmed and closed subscriptions are never billed.
-2. **One invoice per period:** each period is `[period_start, period_end]`, where the length follows the
-   plan's billing period (daily, weekly, monthly or yearly). Before creating an invoice the engine
-   checks for an existing one, and the unique constraint in the database is the final guarantee.
-3. **Catch-up:** if the run date is months after the last run, every missed period is billed in order.
-4. **Expiry:** the engine never bills a period that starts on or after `expiry_date`, except for `renew`.
-   - `auto_close`: the subscription is closed when its expiry is reached.
-   - `manual_close`: billing stops; an admin closes the subscription.
-   - `pause`: billing stops; an admin extends `expiry_date` through `PATCH /subscriptions/{id}/expiry`
-     to resume.
-   - `renew`: expiry is extended one period at a time and billing continues.
-5. **Discounts:** a discount applies to the invoice for each period while it is active by date and while
-   its usage counter is below the limit. Each use increments the counter atomically. Product-scoped
-   discounts apply to matching lines only. Subscription-scoped discounts are spread across lines in
-   proportion to their value, with rounding absorbed by the last line, so the parts always sum to the
-   discount. Cancelling an invoice returns its discount use.
-6. **Taxes:** each line's tax is `(subtotal − discount) × rate`, rounded to cents. Invoice totals are sums of
-   the line values.
-7. **Failures:** each subscription is billed inside its own savepoint. A failure is rolled back for that
-   subscription only, recorded in `billing_runs.errors`, and the run continues.
-
----
-
-## 5. Security
-
-- Passwords are hashed with bcrypt (cost 12). The policy is more than 8 characters, with an uppercase
-  letter, a lowercase letter and a special character.
-- JWT access tokens expire after `ACCESS_TOKEN_MINUTES` (default 60).
-- Reset tokens are random 256-bit values. Only their SHA-256 hash is stored. They expire after 30
-  minutes, can be used once, and all of a user's outstanding tokens are burned when one is used.
-- `forgot-password` returns the same response whether or not the account exists.
-- Role checks run on every route. A customer calling a staff route receives 403. A customer asking for
-  another customer's subscription or invoice receives 404.
-- Payments take a row lock (`SELECT … FOR UPDATE` on PostgreSQL) so concurrent payments cannot overpay an invoice.
-- The printable invoice is admin/staff only. Every customer- and line-supplied value is HTML-escaped before it is
-  placed in the page, and the response carries `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`,
-  `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`.
-
----
-
-## 6. Deployment on your local machine
-
-There are two ways to run this. **Option A** runs the database in Docker and the API on your machine,
-which is the best choice for development and demos. **Option B** runs everything in Docker with one
-command. Both assume you are in the project folder, the one that contains `app/` and `docker-compose.yml`.
-
-### Prerequisites
-
-| Tool | Check it works | Install |
+| Layer | Responsibility | Technologies |
 |---|---|---|
-| Python 3.12 (3.11+ also works) | `python3 --version` | python.org, or `brew install python@3.12` on macOS |
-| Docker Desktop (Docker Engine plus the Compose plugin on Linux) | `docker --version` and `docker compose version` | docker.com |
-| Git (optional) | `git --version` | git-scm.com |
+| Presentation | Provides interfaces for administrators, staff, and customers | React, Vite |
+| API | Exposes REST endpoints and handles request validation and access control | FastAPI, Pydantic |
+| Business Logic | Manages subscriptions, billing, invoices, payments, and reports | Python service modules |
+| Data Access | Maps application objects to database records and manages database operations | SQLAlchemy |
+| Data Storage | Persists customer, subscription, invoice, and payment records | PostgreSQL |
+| Supporting Services | Provides authentication mechanisms and local email testing | JWT, bcrypt, Mailpit |
 
-On Windows, run the commands below in PowerShell. Where a command differs, the Windows version is shown.
+### Request Flow
 
-### Step 1: Unzip the project
+1. A user interacts with the React frontend.
+2. The frontend sends an HTTP request to the FastAPI backend.
+3. The backend validates the request and checks authentication and authorization requirements.
+4. The appropriate service executes the relevant business rules.
+5. SQLAlchemy interacts with PostgreSQL to retrieve or update records.
+6. The backend returns the response to the frontend.
+7. The frontend displays the result to the user.
 
-```bash
-unzip subscription-system.zip
-cd subscription-system
+**Design principle:** Separating API endpoints, business logic, and database operations keeps the application modular and makes its subscription and billing workflows easier to maintain and test.
+
+### Backend Components
+
+- **Routers:** Handle HTTP requests and API responses.
+- **Services:** Implement subscription, billing, payment, and reporting logic.
+- **Models:** Define database entities, relationships, constraints, and indexes.
+- **Schemas:** Validate incoming data and structure API responses.
+- **Security:** Manage authentication, password hashing, and authorization.
+- **Database Layer:** Provides database connectivity and session management.
+
+## Project Structure
+
+The main project structure is organized as follows:
+
+```text
+subscription-management-system/
+│
+├── app/
+│   ├── main.py
+│   ├── config.py
+│   ├── database.py
+│   ├── models.py
+│   ├── schemas.py
+│   ├── security.py
+│   ├── deps.py
+│   ├── routers/
+│   └── services/
+│
+├── frontend/
+├── scripts/
+├── tests/
+├── .dockerignore
+├── .env.example
+├── .gitignore
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+└── README.md
 ```
 
-### Step 2: Create your environment file
+**Note:** This structure highlights the main application components. Refer to the repository for the complete directory and file listing.
+
+## Prerequisites
+
+Install the following tools before running the application:
+
+- Python 3.12
+- Node.js and npm
+- Docker Desktop with Docker Compose
+- Git
+
+The application can also use a locally installed PostgreSQL database if its connection settings are configured correctly.
+
+## Installation and Setup
+
+### Step 1: Clone the Repository
 
 ```bash
-cp .env.example .env          # Windows PowerShell: Copy-Item .env.example .env
+git clone https://github.com/arthi6/subscription-management-system.git
 ```
 
-Open `.env` and change `JWT_SECRET` to a long random string. Leave the rest as it is for local use.
+Navigate to the project directory:
 
----
+```bash
+cd subscription-management-system
+```
 
-### Option A: Database in Docker, API on your machine (recommended)
+### Step 2: Configure Environment Variables
 
-**A1. Start PostgreSQL and the mail catcher**
+Create a local environment file from the example configuration.
+
+**Windows PowerShell**
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Open `.env` and configure the required database connection details, authentication secrets, email settings, and administrator settings.
+
+Use the variable names defined in `.env.example`.
+
+**Important:** Never commit `.env` or expose passwords, JWT secrets, or production credentials in your repository.
+
+### Step 3: Start the Database and Email Testing Services
+
+If you are using the project's Docker Compose configuration, start PostgreSQL and Mailpit:
 
 ```bash
 docker compose up -d db mailpit
-docker compose ps        # db should show "healthy" after a few seconds
 ```
 
-- PostgreSQL runs on `localhost:5432` (user `subs`, password `subs`, database `subscriptions`).
-- Mailpit's inbox is at **http://localhost:8025**. Reset links and invoice emails appear there.
+Check the service status:
 
-**A2. Create a virtual environment and install dependencies**
-
-macOS / Linux:
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+docker compose ps
 ```
 
-Windows PowerShell:
+The configured local service endpoints are:
+
+| Service | Address |
+|---|---|
+| PostgreSQL | `localhost:5437` |
+| Mailpit Web Interface | `http://localhost:8026` |
+| Mailpit SMTP | `localhost:1026` |
+
+**Connection details:** The PostgreSQL container listens on port `5432` internally and maps to host port `5437`. When the backend runs directly on your computer, use the host port. When it runs inside the same Docker network, use the database service name and internal port.
+
+Mailpit captures development emails so you can inspect messages without sending them to real recipients.
+
+### Step 4: Create a Python Virtual Environment
+
+From the project root, run the following commands in Windows PowerShell:
+
 ```powershell
 py -3.12 -m venv .venv
+```
+
+Activate the environment:
+
+```powershell
 .\.venv\Scripts\Activate.ps1
+```
+
+Upgrade pip and install the dependencies:
+
+```powershell
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-If PowerShell blocks the activation script, run this once and try again:
-`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+Ensure that the virtual environment is activated before running the backend or tests.
 
-**A3. Start the API**
+### Step 5: Start the Backend
 
-```bash
+From the project root, run:
+
+```powershell
 uvicorn app.main:app --reload --port 8000
 ```
 
-On first start the app creates every table and the bootstrap admin account:
-`admin@brightloop.com` / `Admin@12345` (from `.env`). You will see
-`Bootstrap admin created` in the log.
+The backend will be available at:
 
-**A4. Check that it works**
+- **API Base URL:** `http://localhost:8000`
+- **Swagger UI:** `http://localhost:8000/docs`
+- **ReDoc:** `http://localhost:8000/redoc`
 
-- Health: http://localhost:8000/health should return `{"status":"ok",...}`
-- Interactive API docs: **http://localhost:8000/docs**. Use the "Authorize" button with the bearer
-  token from the login step below.
+Make sure the database is running and the environment variables are correctly configured before starting the application.
 
----
+## Running the Application
 
-### Option B: Everything in Docker
+### Start the Frontend
+
+Open a second terminal and navigate to the frontend directory:
+
+```powershell
+cd frontend
+```
+
+Install the dependencies:
+
+```powershell
+npm install
+```
+
+Start the development server:
+
+```powershell
+npm run dev
+```
+
+Open the URL displayed in the terminal by Vite.
+
+Ensure that the frontend API configuration points to the correct backend address.
+
+### Build the Frontend
+
+To create a production build, run:
+
+```powershell
+npm run build
+```
+
+### Run the Application Using Docker Compose
+
+If your Docker Compose configuration includes all the required application services, you can build and start them with:
 
 ```bash
 docker compose up -d --build
-docker compose logs -f api        # wait for "Application startup complete"
 ```
 
-- API: http://localhost:8000/docs
-- Mail inbox: http://localhost:8025
-
-To stop: `docker compose down`. To also delete the database volume: `docker compose down -v`.
-
----
-
-### Step 3: Run the tests
-
-With the virtual environment active:
+Check running services:
 
 ```bash
+docker compose ps
+```
+
+View service logs:
+
+```bash
+docker compose logs -f
+```
+
+Stop the services:
+
+```bash
+docker compose down
+```
+
+Stopping the containers does not normally delete named database volumes. Use `docker compose down -v` only when you intentionally want to delete the associated volumes and their stored data.
+
+## API Documentation
+
+The backend uses FastAPI to expose APIs for the application's main business operations.
+
+Interactive API documentation is available at:
+
+`http://localhost:8000/docs`
+
+The alternative documentation interface is available at:
+
+`http://localhost:8000/redoc`
+
+### Main API Modules
+
+| Module | Description |
+|---|---|
+| Authentication | User authentication and password-reset operations |
+| Staff Management | Administrative staff operations |
+| Products and Plans | Product, variant, and subscription-plan management |
+| Subscriptions | Subscription creation and lifecycle management |
+| Billing | Recurring billing runs and billing history |
+| Invoices | Invoice generation and invoice operations |
+| Payments | Payment recording and balance tracking |
+| Reports | Financial summaries and subscription metrics |
+| Customer Portal | Customer-specific subscription and invoice access |
+
+The exact endpoints, request parameters, response schemas, and authorization requirements are available in Swagger UI.
+
+## Testing
+
+The project uses Pytest for backend testing.
+
+Activate the Python virtual environment and run the test suite from the project root:
+
+```powershell
 pytest -q
 ```
 
-Expected output: `43 passed`. The tests use a separate SQLite file (`test_subscriptions.db`) and do not
-touch your PostgreSQL data.
+Review the output to identify failed tests and confirm that the current implementation behaves as expected.
 
----
+To validate the frontend build, navigate to the frontend directory and run:
 
-### Step 4: Walk through one billing month (copy and paste)
-
-These commands use `curl`, which is included on macOS, Linux and Windows 10/11. Each block builds on the
-previous one. For Windows, use Git Bash or WSL, or do the same steps in the `/docs` page.
-
-**4.1 Log in as admin and save the token**
-
-```bash
-TOKEN=$(curl -s -X POST localhost:8000/api/v1/auth/login -H "Content-Type: application/json" \
-  -d '{"email":"admin@brightloop.com","password":"Admin@12345"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
-echo "$TOKEN" | head -c 20 && echo
+```powershell
+npm run build
 ```
 
-**4.2 Create a tax, a product and a plan**
+Only report a test count or success rate after confirming the result against the exact version of the code you intend to publish.
 
-```bash
-curl -s -X POST localhost:8000/api/v1/catalog/taxes -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" -d '{"name":"GST 18%","rate":18}'
+## Security
 
-curl -s -X POST localhost:8000/api/v1/catalog/products -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Odoo Business Suite","product_type":"software","sales_price":999,"cost_price":400,"tax_id":1}'
+The application includes several security-related mechanisms:
 
-curl -s -X POST localhost:8000/api/v1/catalog/products/1/variants -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" -d '{"attribute":"brand","value":"Odoo","price_extra":560}'
+- JWT-based authentication.
+- Role-based authorization.
+- Password hashing using bcrypt.
+- Time-limited password-reset tokens.
+- Customer-specific access restrictions.
+- Database constraints for preventing duplicate billing-period invoices.
+- Validation of payment amounts against outstanding balances.
 
-curl -s -X POST localhost:8000/api/v1/catalog/plans -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Monthly Standard","product_id":1,"price":999,"billing_period":"monthly","min_quantity":1,"available_from":"2025-01-01","end_behavior":"renew"}'
-```
+### Production Security Considerations
 
-**4.3 Create a customer account (self sign-up) and a discount**
+Before deploying the application to production:
 
-```bash
-curl -s -X POST localhost:8000/api/v1/auth/signup -H "Content-Type: application/json" \
-  -d '{"email":"acme@example.com","full_name":"Acme Ltd","password":"Acme#Pass123"}'
+- Use strong, unique authentication secrets.
+- Enable HTTPS.
+- Restrict database access.
+- Configure production email delivery.
+- Protect administrator accounts and credentials.
+- Review environment variables and access permissions.
+- Configure appropriate logging, monitoring, and backups.
 
-curl -s -X POST localhost:8000/api/v1/catalog/discounts -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Seat promo","kind":"percent","value":10,"scope":"subscription","start_date":"2026-01-01","usage_limit":3}'
-```
+The local development configuration should not be treated as a complete production deployment configuration.
 
-Note the returned customer `id` (usually `2`) and discount `id` (usually `1`).
+## Limitations
 
-**4.4 Create a subscription, then move it to Active**
+The current implementation has areas that could be improved:
 
-```bash
-SUB=$(curl -s -X POST localhost:8000/api/v1/subscriptions -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"customer_id":2,"plan_id":1,"quantity":5,"start_date":"2026-01-01","expiry_date":"2026-12-31","variant_ids":[1],"discount_id":1}')
-SUB_ID=$(echo "$SUB" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
-echo "$SUB" | python3 -m json.tool | head -20
+- A dedicated database migration workflow would improve schema-change management.
+- Invoice printing uses print-ready HTML rather than a dedicated server-generated PDF endpoint.
+- Explicit multi-currency support could be added.
+- Frontend automated testing could be expanded.
+- Large recurring-billing workloads would benefit from additional performance testing.
+- Background-job processing and operational monitoring could be expanded as the application grows.
 
-for S in quotation confirmed active; do
-  curl -s -X POST localhost:8000/api/v1/subscriptions/$SUB_ID/transition -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" -d "{\"status\":\"$S\"}" > /dev/null
-done
-echo "subscription $SUB_ID is now active"
-```
+These limitations should be reviewed against the latest code before publishing a release.
 
-**4.5 Run billing day**
+## Future Enhancements
 
-```bash
-curl -s -X POST "localhost:8000/api/v1/billing/runs?run_date=2026-03-15" -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
-```
+Potential future improvements include:
 
-Expected: `invoices_created: 3` (January, February, March). Run the same command again and it
-returns `invoices_created: 0`. That is the exactly-once guarantee.
+- Introducing database migrations using Alembic.
+- Expanding automated frontend and end-to-end testing.
+- Implementing dedicated invoice PDF generation and downloads.
+- Adding explicit currency support.
+- Improving financial analytics and reporting.
+- Introducing scalable background-job processing for recurring billing.
+- Expanding application monitoring and performance metrics.
+- Improving deployment automation and production observability.
 
-**4.6 Confirm an invoice, send it, and record a payment**
-
-```bash
-INV_ID=$(curl -s "localhost:8000/api/v1/invoices?customer_id=2" -H "Authorization: Bearer $TOKEN" \
-  | python3 -c "import sys,json;print(sorted(json.load(sys.stdin)['items'],key=lambda i:i['period_start'])[0]['id'])")
-
-curl -s -X POST localhost:8000/api/v1/invoices/$INV_ID/confirm -H "Authorization: Bearer $TOKEN" | python3 -m json.tool | head -12
-curl -s -X POST localhost:8000/api/v1/invoices/$INV_ID/send -H "Authorization: Bearer $TOKEN" > /dev/null   # check http://localhost:8025
-curl -s localhost:8000/api/v1/invoices/$INV_ID/print -H "Authorization: Bearer $TOKEN" -o invoice.html      # open invoice.html in a browser, then print or save as PDF
-
-curl -s -X POST localhost:8000/api/v1/invoices/$INV_ID/payments -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" -d '{"method":"bank_transfer","amount":500,"paid_on":"2026-01-20","note":"UTR 123456"}'
-curl -s -X POST localhost:8000/api/v1/invoices/$INV_ID/payments -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" -d '{"method":"upi","amount":100000,"paid_on":"2026-01-21"}'   # rejected: over balance
-```
-
-**4.7 Finance summary and the customer's own view**
-
-```bash
-curl -s "localhost:8000/api/v1/reports/summary?start=2026-01-01&end=2026-03-31" -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
-
-CUST=$(curl -s -X POST localhost:8000/api/v1/auth/login -H "Content-Type: application/json" \
-  -d '{"email":"acme@example.com","password":"Acme#Pass123"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
-curl -s localhost:8000/api/v1/portal/subscriptions -H "Authorization: Bearer $CUST" | python3 -m json.tool | head -20
-```
-
-**4.8 Forgot password flow**
-
-```bash
-curl -s -X POST localhost:8000/api/v1/auth/forgot-password -H "Content-Type: application/json" \
-  -d '{"email":"acme@example.com"}'
-```
-
-Open http://localhost:8025, find the email, and copy the link. Then:
-
-```bash
-curl -s -X POST localhost:8000/api/v1/auth/reset-password -H "Content-Type: application/json" \
-  -d '{"token":"PASTE_TOKEN_HERE","new_password":"Brand#New123"}'
-```
-
----
-
-### Step 5: Load realistic volume and check performance
-
-With the API stopped (or in a second terminal, with the venv active):
-
-```bash
-python -m scripts.seed --customers 5000
-```
-
-This creates 5,000 active subscriptions in about a minute. Then time the pages that matter:
-
-```bash
-TOKEN=$(curl -s -X POST localhost:8000/api/v1/auth/login -H "Content-Type: application/json" \
-  -d '{"email":"admin@brightloop.com","password":"Admin@12345"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
-
-curl -s -o /dev/null -w "subscriptions list: %{time_total}s\n" \
-  "localhost:8000/api/v1/subscriptions?status=active&page=1&page_size=50" -H "Authorization: Bearer $TOKEN"
-curl -s -o /dev/null -w "finance summary:    %{time_total}s\n" \
-  "localhost:8000/api/v1/reports/summary" -H "Authorization: Bearer $TOKEN"
-curl -s -o /dev/null -w "overdue invoices:   %{time_total}s\n" \
-  "localhost:8000/api/v1/invoices?overdue=true" -H "Authorization: Bearer $TOKEN"
-```
-
-Seeded customers all use the password `Seed@Pass1`. Seeding with a large count also creates large
-catch-up backlogs when you run billing, so expect the first run to take longer. The large numbers are
-for the performance check only.
-
----
-
-### Optional: run billing automatically
-
-Set `BILLING_AUTO_RUN=true` and `BILLING_INTERVAL_SECONDS=86400` in `.env`, then restart the API. The
-app runs a billing pass every 24 hours in the background. The manual endpoint keeps working alongside it,
-because billing is idempotent.
-
----
-
-## 6a. Web console (frontend)
-
-A responsive React 18 + Vite app in `frontend/`, styled after the supplied Brightloop design (warm cream and
-gold palette, sidebar navigation, search bar, KPI cards). Every screen reads from this backend's API. There is no mock data.
-
-```bash
-cd frontend
-npm install
-npm run dev        # http://localhost:3000, proxies /api to http://localhost:8000
-npm run build      # production build into frontend/dist
-```
-
-| Screen | Roles | Backend endpoints used |
-|---|---|---|
-| Sign in (Admin / Staff / Customer tabs), sign up, forgot and reset password | all | `/auth/login`, `/auth/me`, `/auth/signup`, `/auth/forgot-password`, `/auth/reset-password` |
-| Dashboard: KPI cards, 6-month collected-revenue chart, recent invoices, overdue invoices, subscription status donut | admin, staff | `/reports/summary` (one call per month), `/invoices`, `/subscriptions?status=` |
-| Customers | admin, staff | `/admin/customers` |
-| Products & Plans (create product and plan; admin only) | admin, staff | `/catalog/products`, `/catalog/plans`, `/catalog/taxes` |
-| Subscriptions: list, create, advance status, run billing | admin, staff | `/subscriptions`, `/subscriptions/{id}/transition`, `/billing/runs` |
-| Invoices: list, filter, detail, confirm, email, cancel, record payment, print | admin, staff | `/invoices`, `/invoices/{id}/…` |
-| My invoices and subscriptions | customer | `/portal/invoices`, `/portal/subscriptions` |
-
-Notes:
-- The role tab on the sign-in page must match the account's role, otherwise sign-in is refused with a hint.
-- The reset email links to `http://localhost:3000/reset-password?token=…`, which the console opens on the "new password" form. Emails are visible in Mailpit at http://localhost:8025.
-- The search box in the top bar filters the rows of the current screen.
-- The layout is responsive: the sidebar becomes a slide-in menu below 900 px, tables scroll sideways, and the sign-in art is hidden below 800 px.
-- Amounts are shown with a `$` symbol (`CUR` in `frontend/src/api.js`) because the data model has no currency field.
-- The frontend has no automated tests; the backend suite (`pytest -q`) covers the API.
-
----
-
-## 7. API overview
-
-Base URL: `http://localhost:8000/api/v1`. Full interactive docs at `/docs`.
-
-| Area | Endpoints | Roles |
-|---|---|---|
-| Auth | `POST /auth/signup`, `POST /auth/login`, `GET /auth/me`, `POST /auth/forgot-password`, `POST /auth/reset-password` | public / any |
-| Staff | `POST /admin/staff` | admin |
-| Catalog | `/catalog/taxes`, `/catalog/products`, `/catalog/products/{id}/variants`, `/catalog/plans`, `/catalog/plans/{id}/close`, `/catalog/quotation-templates`, `/catalog/discounts` | writes admin; reads admin + staff |
-| Subscriptions | `POST /subscriptions`, `POST /subscriptions/from-template/{id}`, `GET /subscriptions`, `GET /subscriptions/{id}`, `POST /subscriptions/{id}/transition`, `PATCH /subscriptions/{id}/expiry` | admin + staff |
-| Billing | `POST /billing/runs?run_date=`, `GET /billing/runs` | admin + staff |
-| Invoices | `GET /invoices`, `GET /invoices/{id}`, `POST /invoices/{id}/confirm`, `/cancel`, `/send`, `GET /invoices/{id}/print` (HTML document), `POST /invoices/reminders` | admin + staff |
-| Payments | `POST /invoices/{id}/payments`, `GET /invoices/{id}/payments` | admin + staff |
-| Reports | `GET /reports/summary?start=&end=&plan_id=&customer_id=` | admin + staff |
-| Portal | `GET /portal/subscriptions`, `GET /portal/subscriptions/{id}`, `GET /portal/invoices`, `GET /portal/invoices/{id}` | customer (own data only) |
-
-List endpoints accept `page` and `page_size` (max 100) and return `{page, page_size, total, items}`.
-
----
-
-## 8. Known limits and next steps
-
-These are deliberate scope decisions. They are the first things to add if the project continues.
-
-- **Migrations:** tables are created on startup with `create_all`. For production, add Alembic revisions.
-- **PDF invoices:** `/invoices/{id}/print` returns a print-ready HTML document, not a PDF file. Users can save it
-  as PDF from the browser's print dialog. Server-side PDF generation (WeasyPrint or ReportLab) is not implemented.
-- **Customer invoice printing:** the print route is admin/staff only. Customers can read their own invoice data
-  through `GET /portal/invoices/{id}`, but there is no customer-facing print or download endpoint yet.
-- **Currency:** the data model has no currency field, so the printed invoice shows plain two-decimal amounts
-  with no currency symbol.
-- **Frontend gaps:** the console does not yet include screens for quotation templates, discounts, taxes, variants, staff creation, a payments list, analytics beyond the dashboard, or customer invoice printing. The API supports all of these; use `/docs` meanwhile.
-- **Frontend tests:** none yet.
-- **Cancelled periods:** a cancelled invoice keeps its period, so the engine will not bill that period again.
-  A credit-note flow would be the next step for corrections.
-- **Billing throughput:** the engine flushes one invoice at a time inside a savepoint per subscription.
-  Catch-up runs over very large backlogs should be batched or run in parallel by shard.
-- **Tests:** the suite covers the business rules and access control. Load tests should use the seed
-  script against PostgreSQL.
-
-## Invoice printing and product fields
-
-- **Print an invoice:** `GET /api/v1/invoices/{id}/print` returns a standalone, A4 print-ready **HTML** document
-  (`Content-Type: text/html; charset=utf-8`). It is not a PDF. It shows the configured company name
-  (`COMPANY_NAME`), invoice number (drafts show `DRAFT-<id>`), status, customer name and email, issue date, due
-  date, billing period, subscription number and plan, line items (description, quantity, unit price, amount,
-  discount, tax rate, tax, line total), subtotal, discount, tax, total, amount paid, balance due, and any
-  recorded payments. It reuses `serializers.invoice_out(detail=True)`, so it always matches `GET /invoices/{id}`.
-  Open it in a browser and use Print or "Save as PDF".
-- **Access control:** admin and staff only. No token or an invalid token returns 401. A customer token returns 403,
-  even for the customer's own invoice. An unknown invoice id returns 404. Customers read their own non-draft
-  invoices as JSON through `GET /api/v1/portal/invoices/{id}`.
-- **Escaping:** all dynamic values are escaped with `html.escape` in `app/services/invoice_document.py`.
-- **Products:** `product_type` and `notes` are saved on create, returned by the API, and editable with
-  `PATCH /api/v1/catalog/products/{id}` (admin only). Products without notes remain valid.
-
----
-
-## 9. Submission checklist
-
-- [ ] `.env` created from `.env.example` and `JWT_SECRET` changed (do not commit `.env`).
-- [ ] `docker compose up -d db mailpit` is healthy; API starts and `http://localhost:8000/health` returns ok.
-- [ ] `pytest -q` shows `43 passed`.
-- [ ] `cd frontend && npm install && npm run build` completes.
-- [ ] Walk-through done once: sign up a customer, create a product and plan, create and activate a subscription, run billing, confirm and print an invoice, record a payment, check the dashboard.
-- [ ] Push to GitHub and submit the repository link: https://github.com/arthi6/subscription-management-system
+GitHub Repository:  
+https://github.com/arthi6/subscription-management-system
