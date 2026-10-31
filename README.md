@@ -19,7 +19,6 @@ The project uses **FastAPI, React, and PostgreSQL** to provide a structured solu
 - [Security](#security)
 - [Limitations](#limitations)
 - [Future Enhancements](#future-enhancements)
-- [Author](#author)
 
 ## Overview
 
