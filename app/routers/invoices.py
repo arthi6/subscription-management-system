@@ -2,7 +2,7 @@ from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import HTMLResponse
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
@@ -15,6 +15,7 @@ from app.schemas import PaymentIn
 from app.serializers import invoice_out, payment_out, run_out
 from app.services.billing import cancel_invoice, confirm_invoice, run_billing
 from app.services.common import money, paginate
+from app.services.invoice_document import render_invoice_html
 from app.services.payments import record_payment
 from app.services.reports import overdue_conditions
 
@@ -98,19 +99,20 @@ def send(invoice_id: int, _user: User = Depends(ops), db: Session = Depends(get_
     return invoice_out(invoice)
 
 
-@router.get("/invoices/{invoice_id}/print", response_class=PlainTextResponse)
+@router.get("/invoices/{invoice_id}/print", response_class=HTMLResponse)
 def print_invoice(invoice_id: int, _user: User = Depends(ops), db: Session = Depends(get_db)):
+    """Print-ready A4 HTML invoice. Admin and staff only; unknown ids return 404."""
     inv = get_or_404(db, Invoice, invoice_id, "Invoice")
-    rows = [f"INVOICE {inv.number or '(draft ' + str(inv.id) + ')'}",
-            f"Customer: {inv.customer.full_name} <{inv.customer.email}>",
-            f"Period: {inv.period_start} to {inv.period_end}   Due: {inv.due_date}",
-            "-" * 72]
-    for l in inv.lines:
-        rows.append(f"{l.description[:40]:<40} {l.quantity:>3} x {l.unit_price:>10}  tax {l.tax_rate}%  = {l.line_total:>10}")
-    rows += ["-" * 72,
-             f"Subtotal {inv.subtotal}   Discount {inv.discount_total}   Tax {inv.tax_total}",
-             f"TOTAL {inv.total}   Paid {inv.amount_paid}   Balance {inv.total - inv.amount_paid}"]
-    return "\n".join(rows)
+    return HTMLResponse(
+        render_invoice_html(inv),
+        headers={
+            "Content-Disposition": 'inline; filename="invoice-' + str(inv.number or f"draft-{inv.id}") + '.html"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            # The document needs no scripts or remote assets; forbid them as defence in depth.
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+        },
+    )
 
 
 @router.post("/invoices/reminders")

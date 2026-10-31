@@ -1,3 +1,4 @@
+from app.config import settings
 import json
 
 
@@ -85,6 +86,11 @@ def invoice_out(inv, detail=False):
                           "tax_amount": l.tax_amount, "line_total": l.line_total}
                          for l in inv.lines]
         data["payments"] = [payment_out(p) for p in inv.payments]
+        data["customer"] = {"id": inv.customer.id, "full_name": inv.customer.full_name,
+                            "email": inv.customer.email}
+        data["subscription_number"] = inv.subscription.number
+        data["plan_name"] = inv.subscription.plan.name
+        data["company_name"] = settings.company_name
     return data
 
 
