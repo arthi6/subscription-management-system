@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: subs
+      POSTGRES_PASSWORD: subs
+      POSTGRES_DB: subscriptions
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U subs -d subscriptions"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mailpit:            # local SMTP server with a web inbox at http://localhost:8025
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://subs:subs@db:5432/subscriptions
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      JWT_SECRET: local-docker-secret-change-me-please-32chars
+      BOOTSTRAP_ADMIN_EMAIL: admin@brightloop.com
+      BOOTSTRAP_ADMIN_PASSWORD: Admin@12345
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
