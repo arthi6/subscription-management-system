@@ -8,7 +8,7 @@ from app.database import get_db
 from app.deps import get_or_404, require_roles
 from app.errors import DomainError
 from app.models import Discount, DiscountScope, Plan, Product, ProductVariant, QuotationTemplate, Role, Tax
-from app.schemas import DiscountIn, PlanIn, ProductIn, TaxIn, TemplateIn, VariantIn
+from app.schemas import DiscountIn, PlanIn, ProductIn, ProductUpdate, TaxIn, TemplateIn, VariantIn
 from app.serializers import discount_out, plan_out, product_out, tax_out, template_out
 
 router = APIRouter(prefix="/catalog", tags=["catalog"])
@@ -36,6 +36,22 @@ def create_product(body: ProductIn, _=Depends(admin_only), db: Session = Depends
     product = Product(**body.model_dump())
     db.add(product)
     db.commit()
+    return product_out(product)
+
+
+@router.patch("/products/{product_id}")
+def update_product(product_id: int, body: ProductUpdate, _=Depends(admin_only), db: Session = Depends(get_db)):
+    product = get_or_404(db, Product, product_id, "Product")
+    changes = body.model_dump(exclude_unset=True)
+    for field in ("name", "product_type", "sales_price", "cost_price"):
+        if field in changes and changes[field] is None:
+            raise DomainError(f"{field} cannot be empty")
+    if changes.get("tax_id") is not None:
+        get_or_404(db, Tax, changes["tax_id"], "Tax")
+    for field, value in changes.items():
+        setattr(product, field, value)
+    db.commit()
+    db.refresh(product)
     return product_out(product)
 
 

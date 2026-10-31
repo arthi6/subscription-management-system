@@ -87,6 +87,16 @@ class ProductIn(BaseModel):
     tax_id: Optional[int] = None
 
 
+class ProductUpdate(BaseModel):
+    """Partial update. Only fields that are sent are changed. Required fields cannot be set to null."""
+    name: Optional[str] = Field(default=None, min_length=2, max_length=150)
+    product_type: Optional[str] = Field(default=None, min_length=1, max_length=50)
+    sales_price: Optional[Decimal] = Field(default=None, ge=0)
+    cost_price: Optional[Decimal] = Field(default=None, ge=0)
+    notes: Optional[str] = Field(default=None, max_length=5000)
+    tax_id: Optional[int] = None
+
+
 class VariantIn(BaseModel):
     attribute: str = Field(min_length=1, max_length=50)
     value: str = Field(min_length=1, max_length=100)

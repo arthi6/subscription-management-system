@@ -4,7 +4,32 @@ A backend platform that runs the full life of a subscription business: products 
 plans, taxes, discounts, quotation templates, subscriptions with a controlled lifecycle,
 automatic billing with exactly-once invoicing, payments, overdue tracking, and finance reporting.
 
-Stack: **Python 3.12 · FastAPI · SQLAlchemy 2.0 · PostgreSQL 16 · Pydantic v2 · JWT · bcrypt · Pytest**
+Stack: **Python 3.12 · FastAPI · SQLAlchemy 2.0 · PostgreSQL 16 · Pydantic v2 · JWT · bcrypt · Pytest · React 18 · Vite**
+
+Repository: https://github.com/arthi6/subscription-management-system
+
+## Contents
+
+1. [Abstract](#1-abstract) · 2. [Requirement coverage](#2-requirement-coverage) · 3. [Architecture](#3-architecture) ·
+4. [Billing rules](#4-billing-rules-precisely) · 5. [Security](#5-security) · 6. [Run it locally](#6-deployment-on-your-local-machine) ·
+6a. [Web console](#6a-web-console-frontend) · 7. [API overview](#7-api-overview) · 8. [Known limits](#8-known-limits-and-next-steps) ·
+9. [Submission checklist](#9-submission-checklist)
+
+## Quick start
+
+```bash
+cp .env.example .env
+docker compose up -d db mailpit          # PostgreSQL + mail catcher
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000   # API  -> http://localhost:8000/docs
+# second terminal
+cd frontend && npm install && npm run dev   # UI   -> http://localhost:3000
+```
+
+Log in at http://localhost:3000 with the **Admin** tab: `admin@brightloop.com` / `Admin@12345`.
+Backend tests: `pytest -q` (expect `43 passed`).
+
 
 ---
 
@@ -46,7 +71,7 @@ within the two-second target on large books of business.
 | Draft → Quotation → Confirmed → Active → Closed, logged | `subscriptions.ALLOWED_TRANSITIONS`, `SubscriptionStatusLog` |
 | Taxes calculated automatically | `Tax` linked to products; computed per line in `billing.build_invoice` |
 | Automatic invoices on billing day, nothing billed twice or skipped | `billing.run_billing`, unique `(subscription_id, period_start)` |
-| Invoice Draft → Confirmed → Paid; confirm, cancel, send, print | `invoices` router, `billing.confirm_invoice` / `cancel_invoice` |
+| Invoice Draft → Confirmed → Paid; confirm, cancel, send, print | `invoices` router, `billing.confirm_invoice` / `cancel_invoice`; print via `invoice_document.render_invoice_html` |
 | Discounts: fixed or percent, min purchase/quantity, dates, usage limit | `Discount` model, `billing._find_discount`, `_consume_usage` |
 | Discount applies to next invoice automatically and stops when used up | Applied in every `build_invoice`; atomic usage counter |
 | Payments by method, amount, date, note, against an invoice | `payments` service, `POST /invoices/{id}/payments` |
@@ -74,10 +99,12 @@ app/
     subscriptions.py   State machine, subscription creation
     billing.py         Invoice building, discounts, taxes, billing runs, invoice actions
     payments.py        Payment recording and derived invoice status
+    invoice_document.py  Print-ready HTML invoice renderer (escapes every value)
     reports.py         Finance aggregates and aging buckets
     common.py          Decimal helpers, period arithmetic, pagination
   routers/           Thin HTTP layer: auth, catalog, subscriptions, invoices, reports, portal
-tests/               Pytest suite (18 tests) run against SQLite
+frontend/            React + Vite web console (src/App.jsx, src/api.js, src/styles.css)
+tests/               Pytest suite (43 tests) run against SQLite
 scripts/seed.py      Demo data generator for performance checks
 ```
 
@@ -143,6 +170,9 @@ amounts.
 - Role checks run on every route. A customer calling a staff route receives 403. A customer asking for
   another customer's subscription or invoice receives 404.
 - Payments take a row lock (`SELECT … FOR UPDATE` on PostgreSQL) so concurrent payments cannot overpay an invoice.
+- The printable invoice is admin/staff only. Every customer- and line-supplied value is HTML-escaped before it is
+  placed in the page, and the response carries `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`,
+  `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`.
 
 ---
 
@@ -252,7 +282,7 @@ With the virtual environment active:
 pytest -q
 ```
 
-Expected output: `18 passed`. The tests use a separate SQLite file (`test_subscriptions.db`) and do not
+Expected output: `43 passed`. The tests use a separate SQLite file (`test_subscriptions.db`) and do not
 touch your PostgreSQL data.
 
 ---
@@ -334,6 +364,7 @@ INV_ID=$(curl -s "localhost:8000/api/v1/invoices?customer_id=2" -H "Authorizatio
 
 curl -s -X POST localhost:8000/api/v1/invoices/$INV_ID/confirm -H "Authorization: Bearer $TOKEN" | python3 -m json.tool | head -12
 curl -s -X POST localhost:8000/api/v1/invoices/$INV_ID/send -H "Authorization: Bearer $TOKEN" > /dev/null   # check http://localhost:8025
+curl -s localhost:8000/api/v1/invoices/$INV_ID/print -H "Authorization: Bearer $TOKEN" -o invoice.html      # open invoice.html in a browser, then print or save as PDF
 
 curl -s -X POST localhost:8000/api/v1/invoices/$INV_ID/payments -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" -d '{"method":"bank_transfer","amount":500,"paid_on":"2026-01-20","note":"UTR 123456"}'
@@ -403,18 +434,35 @@ because billing is idempotent.
 
 ---
 
-## 6a. Running the web console
+## 6a. Web console (frontend)
 
-The console is a separate React app in `frontend/`. Keep the API running (section 6), then in a new terminal:
+A responsive React 18 + Vite app in `frontend/`, styled after the supplied Brightloop design (warm cream and
+gold palette, sidebar navigation, search bar, KPI cards). Every screen reads from this backend's API. There is no mock data.
 
 ```bash
 cd frontend
 npm install
-npm run dev
+npm run dev        # http://localhost:3000, proxies /api to http://localhost:8000
+npm run build      # production build into frontend/dist
 ```
 
-Open **http://localhost:3000** and log in with `admin@brightloop.com` / `Admin@12345`. The dev server forwards
-`/api` requests to the API on port 8000, so no CORS setup is needed. See `frontend/README.md` for screen-by-screen notes.
+| Screen | Roles | Backend endpoints used |
+|---|---|---|
+| Sign in (Admin / Staff / Customer tabs), sign up, forgot and reset password | all | `/auth/login`, `/auth/me`, `/auth/signup`, `/auth/forgot-password`, `/auth/reset-password` |
+| Dashboard: KPI cards, 6-month collected-revenue chart, recent invoices, overdue invoices, subscription status donut | admin, staff | `/reports/summary` (one call per month), `/invoices`, `/subscriptions?status=` |
+| Customers | admin, staff | `/admin/customers` |
+| Products & Plans (create product and plan; admin only) | admin, staff | `/catalog/products`, `/catalog/plans`, `/catalog/taxes` |
+| Subscriptions: list, create, advance status, run billing | admin, staff | `/subscriptions`, `/subscriptions/{id}/transition`, `/billing/runs` |
+| Invoices: list, filter, detail, confirm, email, cancel, record payment, print | admin, staff | `/invoices`, `/invoices/{id}/…` |
+| My invoices and subscriptions | customer | `/portal/invoices`, `/portal/subscriptions` |
+
+Notes:
+- The role tab on the sign-in page must match the account's role, otherwise sign-in is refused with a hint.
+- The reset email links to `http://localhost:3000/reset-password?token=…`, which the console opens on the "new password" form. Emails are visible in Mailpit at http://localhost:8025.
+- The search box in the top bar filters the rows of the current screen.
+- The layout is responsive: the sidebar becomes a slide-in menu below 900 px, tables scroll sideways, and the sign-in art is hidden below 800 px.
+- Amounts are shown with a `$` symbol (`CUR` in `frontend/src/api.js`) because the data model has no currency field.
+- The frontend has no automated tests; the backend suite (`pytest -q`) covers the API.
 
 ---
 
@@ -429,7 +477,7 @@ Base URL: `http://localhost:8000/api/v1`. Full interactive docs at `/docs`.
 | Catalog | `/catalog/taxes`, `/catalog/products`, `/catalog/products/{id}/variants`, `/catalog/plans`, `/catalog/plans/{id}/close`, `/catalog/quotation-templates`, `/catalog/discounts` | writes admin; reads admin + staff |
 | Subscriptions | `POST /subscriptions`, `POST /subscriptions/from-template/{id}`, `GET /subscriptions`, `GET /subscriptions/{id}`, `POST /subscriptions/{id}/transition`, `PATCH /subscriptions/{id}/expiry` | admin + staff |
 | Billing | `POST /billing/runs?run_date=`, `GET /billing/runs` | admin + staff |
-| Invoices | `GET /invoices`, `GET /invoices/{id}`, `POST /invoices/{id}/confirm`, `/cancel`, `/send`, `GET /invoices/{id}/print`, `POST /invoices/reminders` | admin + staff |
+| Invoices | `GET /invoices`, `GET /invoices/{id}`, `POST /invoices/{id}/confirm`, `/cancel`, `/send`, `GET /invoices/{id}/print` (HTML document), `POST /invoices/reminders` | admin + staff |
 | Payments | `POST /invoices/{id}/payments`, `GET /invoices/{id}/payments` | admin + staff |
 | Reports | `GET /reports/summary?start=&end=&plan_id=&customer_id=` | admin + staff |
 | Portal | `GET /portal/subscriptions`, `GET /portal/subscriptions/{id}`, `GET /portal/invoices`, `GET /portal/invoices/{id}` | customer (own data only) |
@@ -443,13 +491,44 @@ List endpoints accept `page` and `page_size` (max 100) and return `{page, page_s
 These are deliberate scope decisions. They are the first things to add if the project continues.
 
 - **Migrations:** tables are created on startup with `create_all`. For production, add Alembic revisions.
-- **PDF invoices:** `/invoices/{id}/print` returns plain text. A WeasyPrint or ReportLab renderer slots into
-  the same route.
-- **Frontend:** the brief asks for a working backend first, so this repository contains the API only. The
-  `/docs` page is the admin console until a React front end is built against the same endpoints.
+- **PDF invoices:** `/invoices/{id}/print` returns a print-ready HTML document, not a PDF file. Users can save it
+  as PDF from the browser's print dialog. Server-side PDF generation (WeasyPrint or ReportLab) is not implemented.
+- **Customer invoice printing:** the print route is admin/staff only. Customers can read their own invoice data
+  through `GET /portal/invoices/{id}`, but there is no customer-facing print or download endpoint yet.
+- **Currency:** the data model has no currency field, so the printed invoice shows plain two-decimal amounts
+  with no currency symbol.
+- **Frontend gaps:** the console does not yet include screens for quotation templates, discounts, taxes, variants, staff creation, a payments list, analytics beyond the dashboard, or customer invoice printing. The API supports all of these; use `/docs` meanwhile.
+- **Frontend tests:** none yet.
 - **Cancelled periods:** a cancelled invoice keeps its period, so the engine will not bill that period again.
   A credit-note flow would be the next step for corrections.
 - **Billing throughput:** the engine flushes one invoice at a time inside a savepoint per subscription.
   Catch-up runs over very large backlogs should be batched or run in parallel by shard.
 - **Tests:** the suite covers the business rules and access control. Load tests should use the seed
   script against PostgreSQL.
+
+## Invoice printing and product fields
+
+- **Print an invoice:** `GET /api/v1/invoices/{id}/print` returns a standalone, A4 print-ready **HTML** document
+  (`Content-Type: text/html; charset=utf-8`). It is not a PDF. It shows the configured company name
+  (`COMPANY_NAME`), invoice number (drafts show `DRAFT-<id>`), status, customer name and email, issue date, due
+  date, billing period, subscription number and plan, line items (description, quantity, unit price, amount,
+  discount, tax rate, tax, line total), subtotal, discount, tax, total, amount paid, balance due, and any
+  recorded payments. It reuses `serializers.invoice_out(detail=True)`, so it always matches `GET /invoices/{id}`.
+  Open it in a browser and use Print or "Save as PDF".
+- **Access control:** admin and staff only. No token or an invalid token returns 401. A customer token returns 403,
+  even for the customer's own invoice. An unknown invoice id returns 404. Customers read their own non-draft
+  invoices as JSON through `GET /api/v1/portal/invoices/{id}`.
+- **Escaping:** all dynamic values are escaped with `html.escape` in `app/services/invoice_document.py`.
+- **Products:** `product_type` and `notes` are saved on create, returned by the API, and editable with
+  `PATCH /api/v1/catalog/products/{id}` (admin only). Products without notes remain valid.
+
+---
+
+## 9. Submission checklist
+
+- [ ] `.env` created from `.env.example` and `JWT_SECRET` changed (do not commit `.env`).
+- [ ] `docker compose up -d db mailpit` is healthy; API starts and `http://localhost:8000/health` returns ok.
+- [ ] `pytest -q` shows `43 passed`.
+- [ ] `cd frontend && npm install && npm run build` completes.
+- [ ] Walk-through done once: sign up a customer, create a product and plan, create and activate a subscription, run billing, confirm and print an invoice, record a payment, check the dashboard.
+- [ ] Push to GitHub and submit the repository link: https://github.com/arthi6/subscription-management-system

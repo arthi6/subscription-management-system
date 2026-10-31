@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_name: str = "Subscription Management System"
+    company_name: str = "Brightloop Billing"
     database_url: str = "postgresql+psycopg://subs:subs@localhost:5432/subscriptions"
 
     jwt_secret: str = "dev-only-secret-change-me"
